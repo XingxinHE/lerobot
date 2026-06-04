@@ -51,7 +51,16 @@ def resolve_delta_timestamps(
             returns `None` if the resulting dict is empty.
     """
     delta_timestamps = {}
+    selected_features = set(getattr(cfg, "input_features", {}) or {})
+    selected_features.update(getattr(cfg, "output_features", {}) or {})
+
     for key in ds_meta.features:
+        if selected_features and key not in selected_features:
+            continue
+
+        if ds_meta.features[key].get("dtype") == "string":
+            continue
+
         if key == REWARD and cfg.reward_delta_indices is not None:
             delta_timestamps[key] = [i / ds_meta.fps for i in cfg.reward_delta_indices]
         if key == ACTION and cfg.action_delta_indices is not None:
