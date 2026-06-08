@@ -1051,13 +1051,24 @@ def main():
     # Determine episodes
     episode_indices = args.episodes or list(range(dataset.meta.total_episodes))
 
-    existing_annotations = load_annotations_from_dataset(dataset.root, prefix="sparse")
+    existing_sparse_annotations = load_annotations_from_dataset(dataset.root, prefix="sparse")
+    existing_dense_annotations = (
+        load_annotations_from_dataset(dataset.root, prefix="dense") if dense_mode else {}
+    )
     if args.skip_existing:
-        episode_indices = [ep for ep in episode_indices if ep not in existing_annotations]
+        complete_episodes = (
+            set(existing_sparse_annotations) & set(existing_dense_annotations)
+            if dense_mode
+            else set(existing_sparse_annotations)
+        )
+        num_requested = len(episode_indices)
+        episode_indices = [ep for ep in episode_indices if ep not in complete_episodes]
+        print(f"Skipping {num_requested - len(episode_indices)} fully annotated episodes")
 
     if not episode_indices:
-        return print("All episodes already annotated!")
-    print(f"Annotating {len(episode_indices)} episodes")
+        print("All requested episodes already annotated; recomputing temporal proportions/visualizations.")
+    else:
+        print(f"Annotating {len(episode_indices)} episodes")
 
     # GPU setup
     gpu_ids = args.gpu_ids or list(
@@ -1065,11 +1076,11 @@ def main():
     )
     args.num_workers = len(gpu_ids)
 
-    sparse_annotations = existing_annotations.copy()
-    dense_annotations = {} if dense_mode else None
+    sparse_annotations = existing_sparse_annotations.copy()
+    dense_annotations = existing_dense_annotations.copy() if dense_mode else None
 
     # Auto-sparse mode
-    if auto_sparse:
+    if episode_indices and auto_sparse:
         sparse_annotations.update(generate_auto_sparse_annotations(dataset, episode_indices, video_key))
         save_annotations_to_dataset(dataset.root, sparse_annotations, fps, prefix="sparse")
         print(f"Auto-generated {len(episode_indices)} sparse 'task' annotations")
@@ -1077,7 +1088,7 @@ def main():
     # VLM annotation (for sparse if not auto, and for dense)
     need_vlm = (not auto_sparse) or dense_mode
 
-    if need_vlm:
+    if episode_indices and need_vlm:
         if args.num_workers > 1 and not auto_sparse:
             # Parallel processing
             print(f"Parallel processing with {args.num_workers} workers")
@@ -1140,24 +1151,30 @@ def main():
                 print(f"Episode {ep_idx} ({i + 1}/{len(episode_indices)})")
 
                 if sparse_annotator:
-                    _, sparse_ann, err = process_single_episode(
-                        ep_idx, dataset.root, dataset.meta, video_key, fps, sparse_annotator
-                    )
-                    if sparse_ann:
-                        sparse_annotations[ep_idx] = sparse_ann
-                        save_annotations_to_dataset(dataset.root, sparse_annotations, fps, prefix="sparse")
-                    elif err:
-                        print(f"Sparse failed: {err}")
+                    if args.skip_existing and ep_idx in sparse_annotations:
+                        print("Sparse already annotated; skipping sparse")
+                    else:
+                        _, sparse_ann, err = process_single_episode(
+                            ep_idx, dataset.root, dataset.meta, video_key, fps, sparse_annotator
+                        )
+                        if sparse_ann:
+                            sparse_annotations[ep_idx] = sparse_ann
+                            save_annotations_to_dataset(dataset.root, sparse_annotations, fps, prefix="sparse")
+                        elif err:
+                            print(f"Sparse failed: {err}")
 
                 if dense_annotator:
-                    _, dense_ann, err = process_single_episode(
-                        ep_idx, dataset.root, dataset.meta, video_key, fps, dense_annotator
-                    )
-                    if dense_ann:
-                        dense_annotations[ep_idx] = dense_ann
-                        save_annotations_to_dataset(dataset.root, dense_annotations, fps, prefix="dense")
-                    elif err:
-                        print(f"Dense failed: {err}")
+                    if args.skip_existing and dense_annotations is not None and ep_idx in dense_annotations:
+                        print("Dense already annotated; skipping dense")
+                    else:
+                        _, dense_ann, err = process_single_episode(
+                            ep_idx, dataset.root, dataset.meta, video_key, fps, dense_annotator
+                        )
+                        if dense_ann:
+                            dense_annotations[ep_idx] = dense_ann
+                            save_annotations_to_dataset(dataset.root, dense_annotations, fps, prefix="dense")
+                        elif err:
+                            print(f"Dense failed: {err}")
 
     # Save temporal proportions
     def save_proportions(annotations, prefix, subtask_list=None, is_auto=False):
